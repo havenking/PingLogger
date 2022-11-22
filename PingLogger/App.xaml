@@ -1,7 +1,7 @@
-﻿<Application x:Class="InternetLogger.App"
+﻿<Application x:Class="PingLogger.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:InternetLogger"
+             xmlns:local="clr-namespace:PingLogger"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
          

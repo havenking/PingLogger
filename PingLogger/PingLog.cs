@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Net.NetworkInformation;
 
-namespace InternetLogger
+namespace PingLogger
 {
     public class PingLog
     {

@@ -15,14 +15,14 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 
-namespace InternetLogger
+namespace PingLogger
 {
     /// <summary>
     /// Interaction logic for MainWindow.xaml
     /// </summary>
     public partial class MainWindow : Window, INotifyPropertyChanged
     {
-        private static string LOGFILENAME = "InternetLogger";
+        private static string LOGFILENAME = "PingLogger";
         private static string LOGFILEEXTENSION = ".log";
         private static string START = "Start";
         private static string STOP = "Stop";
