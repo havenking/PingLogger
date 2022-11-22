@@ -27,12 +27,15 @@ namespace InternetLogger
         private static string START = "Start";
         private static string STOP = "Stop";
 
-        private readonly ObservableCollection<string> textLog;
+        private readonly ObservableCollection<PingLog> textLog;
 
         private bool isRunning;
         private bool autoScrollEnabled;
         private bool configEnabled;
         private StreamWriter logfileStream;
+        private Semaphore logSemaphore;
+        private Queue<Task> taskQueue;
+        private Semaphore taskListSemaphore;
 
         private string startButtonText;
         private long maxLatency;
@@ -44,8 +47,6 @@ namespace InternetLogger
         private int errorRequests;
         private float successRate;
 
-        private DateTime currentday;
-
         public MainWindow()
         {
             InitializeComponent();
@@ -54,21 +55,20 @@ namespace InternetLogger
 
             isRunning = false;
             autoScrollEnabled = true;
-
-            textLog = new ObservableCollection<string>();
             startButtonText = START;
-            currentday = DateTime.Today;
 
+            textLog = new ObservableCollection<PingLog>();
+            logSemaphore = new Semaphore(initialCount: 1, maximumCount: 1);
+            taskListSemaphore = new Semaphore(initialCount: 1, maximumCount: 1);
+            taskQueue = new Queue<Task>();
 
             StartButtonCommand = new DelegateCommand(Run);
-
             CloseButtonCommand = new DelegateCommand(Close);
-
             ScrollBottomCommand = new DelegateCommand(ScrollToBottom);
 
             Closing += OnWindowClosing;
 
-            string path = Directory.GetCurrentDirectory() + "/" + DateTime.Now.ToString("yyyy-MM-dd") + LOGFILENAME + LOGFILEEXTENSION;
+            string path = Directory.GetCurrentDirectory() + "/" + DateTime.Now.ToString("yyyy-MM-dd") + "_" + LOGFILENAME + LOGFILEEXTENSION;
 
             if (File.Exists(path))
             {
@@ -78,7 +78,7 @@ namespace InternetLogger
 
                     while (line != null)
                     {
-                        TextLog.Add(line);
+                        TextLog.Add(new PingLog(line));
 
                         TotalRequests += 1;
 
@@ -106,12 +106,10 @@ namespace InternetLogger
                         line = reader.ReadLine();
                     }
                 }
+
+                if (TotalRequests != 0)
+                    SuccessRate = SuccessRequests * 100f / TotalRequests;
             }
-
-            if (TotalRequests != 0)
-                SuccessRate = SuccessRequests * 100f / TotalRequests;
-
-            logfileStream = File.AppendText(path);
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;
@@ -121,7 +119,6 @@ namespace InternetLogger
         public ICommand CloseButtonCommand { get; }
 
         public ICommand ScrollBottomCommand { get; }
-
 
         public bool AutoScrollEnabled
         {
@@ -321,7 +318,7 @@ namespace InternetLogger
             }
         }
 
-        public ObservableCollection<string> TextLog
+        public ObservableCollection<PingLog> TextLog
         {
             get { return textLog; }
         }
@@ -334,7 +331,7 @@ namespace InternetLogger
             {
                 StartButtonText = STOP;
 
-                PingLoop();
+                Task.Factory.StartNew(() => PingLoop());
             }
             else
             {
@@ -342,18 +339,22 @@ namespace InternetLogger
             }
         }
 
-        private async void PingLoop()
+        private async Task PingLoop()
         {
             try
             {
                 while (isRunning)
                 {
-                    await Task.Delay(1000);//Espera 1 segundo
+                    await Task.Delay(1000);
 
                     if (!isRunning)
                         return;
 
-                    PingRequest();
+                    Task task = Task.Factory.StartNew(() => PingRequestAsync());
+
+                    taskListSemaphore.WaitOne();
+                    taskQueue.Enqueue(task);
+                    taskListSemaphore.Release();
                 }
 
                 return;
@@ -365,22 +366,34 @@ namespace InternetLogger
             }
         }
 
-        private async void PingRequest()
+        private Task PingRequestAsync()
         {
-            Ping myPing = new Ping();
-            String host = "8.8.8.8";
-            byte[] buffer = new byte[32];
-            int timeout = 2000;
-            PingOptions pingOptions = new PingOptions();
-            string log;
-            PingReply reply = myPing.Send(host, timeout, buffer, pingOptions);
+            DateTime pingTime = DateTime.Now;
+            Ping ping = new Ping();
+            Task<PingReply> replyTask = ping.SendPingAsync("8.8.8.8", 1000, new byte[32], new PingOptions());
 
+            logSemaphore.WaitOne();
+
+            replyTask.Wait();
+
+            if (replyTask.IsCompleted)
+            {
+                PingReply reply = replyTask.Result;
+
+                Application.Current.Dispatcher.Invoke(() => UpdateLog(pingTime, reply));
+            }
+
+            logSemaphore.Release();
+
+            return Task.CompletedTask;
+        }
+
+        private void UpdateLog(DateTime pingTime, PingReply reply)
+        {
             TotalRequests += 1;
 
             if (reply.Status == IPStatus.Success)
             {
-                log = string.Format("{0} - Reply from {1} - time={2}ms ", DateTime.Now.ToString("HH:mm:ss"), reply.Address.ToString(), reply.RoundtripTime.ToString());
-
                 SuccessRequests += 1;
 
                 if (reply.RoundtripTime > MaxLatency)
@@ -392,32 +405,28 @@ namespace InternetLogger
             }
             else if (reply.Status == IPStatus.TimedOut)
             {
-                log = string.Format("{0} - Request time out.", DateTime.Now.ToString("HH:mm:ss"));
-
                 TimedOutRequests += 1;
             }
             else
             {
-                log = string.Format("{0} - {1} Error", DateTime.Now.ToString("HH:mm:ss"), reply.Status.ToString());
-
                 ErrorRequests += 1;
             }
 
             SuccessRate = SuccessRequests * 100f / TotalRequests;
 
-            if (currentday != DateTime.Today)
-            {
-                string path = Directory.GetCurrentDirectory() + "/" + DateTime.Now.ToString("yyyy-MM-dd") + LOGFILENAME + LOGFILEEXTENSION;
-                logfileStream = File.AppendText(path);
-            }
+            PingLog log = new PingLog(pingTime, reply);
 
-            logfileStream.WriteLine(log);
+            string path = Directory.GetCurrentDirectory() + "/" + DateTime.Now.ToString("yyyy-MM-dd") + "_" + LOGFILENAME + LOGFILEEXTENSION;
+            logfileStream = File.AppendText(path);
+            logfileStream.WriteLine(log.ToString());
+            logfileStream.Close();
+
             TextLog.Add(log);
 
             if (AutoScrollEnabled)
                 ScrollToBottom();
         }
-        
+
         private void ScrollToBottom()
         {
             AutoScrollToCurrentItem(listBoxTextLog, listBoxTextLog.Items.Count);
@@ -445,10 +454,10 @@ namespace InternetLogger
                 return;
 
             // Find the ScrollContentPresenter
-            ScrollContentPresenter presenter = null;
+            ScrollContentPresenter? presenter = null;
 
-            for (Visual vis = container; vis != null && vis != listBox; vis = VisualTreeHelper.GetParent(vis) as Visual)
-                if ((presenter = vis as ScrollContentPresenter) != null)
+            for (Visual? visual = container; visual != null && visual != listBox; visual = VisualTreeHelper.GetParent(visual) as Visual)
+                if ((presenter = visual as ScrollContentPresenter) != null)
                     break;
 
             if (presenter == null)
@@ -462,7 +471,7 @@ namespace InternetLogger
                 presenter;
 
             // Find the amount of items that is "Visible" in the ListBox
-            var height = (container as ListBoxItem).ActualHeight;
+            double height = (container as ListBoxItem).ActualHeight;
             var lbHeight = listBox.ActualHeight;
             var showCount = (int)(lbHeight / height) - 1;
 
@@ -471,7 +480,7 @@ namespace InternetLogger
                 scrollInfo.SetVerticalOffset(index - showCount);
         }
 
-        private static DependencyObject FirstVisualChild(Visual visual)
+        private static DependencyObject? FirstVisualChild(Visual visual)
         {
             if (visual == null)
                 return null;
@@ -484,7 +493,8 @@ namespace InternetLogger
 
         private void OnWindowClosing(object? sender, CancelEventArgs e)
         {
-            logfileStream?.Close();
+            isRunning = false;
+            Task.WaitAll(taskQueue.ToArray(), millisecondsTimeout: 3000);
         }
     }
 }
